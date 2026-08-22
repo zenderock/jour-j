@@ -115,6 +115,103 @@ jobs:
             echo "SOKIAL_KEY_ALIAS=sokial"
           } >> "$GITHUB_ENV"
 
+      # Adds Sokial's tester gate to this build only.
+      #
+      # This configuration is set to invited testers, so the application asks
+      # for an email on first launch and opens for an address on the project's
+      # list. Nothing is written into your repository: the file below lives on
+      # the runner and is destroyed with it.
+      - name: Add the Sokial tester gate
+        env:
+          SOKIAL_MAVEN: https://maven.sokial.app
+          SOKIAL_RUNTIME_VERSION: 0.1.0
+          SOKIAL_API: https://api.sokial.app
+          SOKIAL_PROJECT: 09e80a7a-af0c-4b49-983b-ad7b2e499dd7
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gradle/init.d"
+
+          # Carried to the build step, not just this one.
+          #
+          # A step's env: block ends with the step. The script written below is
+          # read much later, by Gradle, in the step that compiles — and it reads
+          # these from the environment. Without this they are absent exactly
+          # where they are needed, and the first thing Gradle does with a
+          # missing repository URL is fail somebody else's plugin resolution.
+          {
+            echo "SOKIAL_MAVEN=$SOKIAL_MAVEN"
+            echo "SOKIAL_RUNTIME_VERSION=$SOKIAL_RUNTIME_VERSION"
+            echo "SOKIAL_API=$SOKIAL_API"
+            echo "SOKIAL_PROJECT=$SOKIAL_PROJECT"
+          } >> "$GITHUB_ENV"
+
+          # Quoted heredoc: nothing in the script below is expanded by the
+          # shell, so a value is substituted once, by Gradle, from the
+          # environment — and never spliced into the file as text.
+          cat > "$HOME/.gradle/init.d/sokial-runtime.gradle" <<'SOKIAL_INIT'
+          def sokialMaven = System.getenv("SOKIAL_MAVEN")
+          def sokialVersion = System.getenv("SOKIAL_RUNTIME_VERSION")
+          def sokialApi = System.getenv("SOKIAL_API")
+          def sokialProject = System.getenv("SOKIAL_PROJECT")
+
+          // Nothing configured, nothing done.
+          //
+          // An init script applies to included builds as well as the root one —
+          // React Native resolves its own Gradle plugin from one — so a missing
+          // value must never become uri(null) in the middle of a plugin
+          // resolution that has nothing to do with Sokial.
+          //
+          // A gate that cannot configure itself leaves the build exactly as it
+          // found it. The application then opens without asking, which is
+          // wrong; a build that will not compile is unforgivable.
+          if (!sokialMaven || !sokialVersion || !sokialApi || !sokialProject) {
+              logger.lifecycle("Sokial: tester gate not configured, skipping.")
+              return
+          }
+
+          gradle.settingsEvaluated { settings ->
+              def management = settings.dependencyResolutionManagement
+              management.repositories {
+                  maven {
+                      url = uri(sokialMaven)
+                      content { includeGroup("app.sokial") }
+                  }
+              }
+
+              // Where the repository has to be declared depends on the project,
+              // and getting it wrong fails two different ways: under
+              // FAIL_ON_PROJECT_REPOS a project-level repository is a hard
+              // error, and under PREFER_PROJECT a project that declares its own
+              // never reads the settings block at all.
+              if (management.repositoriesMode.get().name() == "PREFER_PROJECT") {
+                  gradle.beforeProject { project ->
+                      project.repositories {
+                          maven {
+                              url = uri(sokialMaven)
+                              content { includeGroup("app.sokial") }
+                          }
+                      }
+                  }
+              }
+          }
+
+          gradle.beforeProject { project ->
+              // Only the application module, and only once its plugin is
+              // applied. Adding it to every module would put several copies of
+              // an auto-starting provider into one package.
+              project.plugins.withId("com.android.application") {
+                  project.dependencies.add(
+                      "implementation",
+                      "app.sokial:sokial-runtime:${sokialVersion}",
+                  )
+                  project.extensions.getByName("android").defaultConfig.manifestPlaceholders.putAll([
+                      sokialApi    : sokialApi,
+                      sokialProject: sokialProject,
+                  ])
+              }
+          }
+          SOKIAL_INIT
+
       - name: Build
         working-directory: android
         run: |
@@ -163,16 +260,32 @@ jobs:
 
           # Sokial signs a destination; the package then goes straight to
           # storage. Nothing this large is worth proxying through an API.
+          # Why the body is echoed on failure.
+          #
+          # --fail-with-body writes Sokial's answer to stdout and then exits
+          # non-zero — but the substitution captures that stdout into a
+          # variable, so all the log ever showed was "curl: (22) ... error:
+          # 402". The reason is a sentence Sokial wrote to be read here, and it
+          # was being swallowed at the last step.
           body="{\"kind\":\"apk\",\"sizeBytes\":$size,\"configuration\":\"$SOKIAL_CONFIG\"}"
-          upload=$(curl -sS --fail-with-body -X POST "$SOKIAL_API/v1/uploads" -H "$auth" -H "$json" -d "$body")
+          upload=$(curl -sS --fail-with-body -X POST "$SOKIAL_API/v1/uploads" -H "$auth" -H "$json" -d "$body") || {
+            echo "::error::Sokial refused this upload. $(printf '%s' "$upload" | jq -r '.message // .' 2>/dev/null || printf '%s' "$upload")"
+            exit 1
+          }
 
           id=$(printf '%s' "$upload" | jq -r .uploadId)
           put=$(printf '%s' "$upload" | jq -r .putUrl)
 
-          curl -sS --fail-with-body -X PUT "$put" --upload-file "$ARTIFACT"
+          if ! stored=$(curl -sS --fail-with-body -X PUT "$put" --upload-file "$ARTIFACT"); then
+            echo "::error::The package could not be stored. $stored"
+            exit 1
+          fi
 
           # Only now does the build count as delivered: Sokial confirms the file
           # actually arrived before it publishes anything.
           result="{\"checksum\":\"$checksum\"}"
-          curl -sS --fail-with-body -X POST "$SOKIAL_API/v1/uploads/$id/finalize" -H "$auth" -H "$json" -d "$result"
+          finalize=$(curl -sS --fail-with-body -X POST "$SOKIAL_API/v1/uploads/$id/finalize" -H "$auth" -H "$json" -d "$result") || {
+            echo "::error::Sokial could not accept the finished upload. $(printf '%s' "$finalize" | jq -r '.message // .' 2>/dev/null || printf '%s' "$finalize")"
+            exit 1
+          }
 
