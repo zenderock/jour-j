@@ -28,11 +28,7 @@ on:
         type: string
   push:
     branches: [main]
-  pull_request:
-    paths-ignore:
-      # A change to this file alone produces a preview identical to the base
-      # branch. Nothing to install, nothing to compare.
-      - '.github/workflows/sokial.yml'
+  # Pull request builds are turned off in this project's Sokial settings.
 
 # Only the newest run per ref and configuration matters — an older one is
 # building code nobody is waiting for any more. The configuration is part of the
@@ -65,7 +61,7 @@ jobs:
           esac
 
   android-debug:
-    name: "Android debug"
+    name: "Android Release"
     needs: configuration
     if: ${{ inputs.sokial_config == '' || inputs.sokial_config == 'android-debug' }}
     runs-on: ubuntu-latest
@@ -86,17 +82,63 @@ jobs:
         run: |
           npm ci
 
+      # A signing key minted for this run and destroyed with it.
+      #
+      # It is NOT your application's identity. Every build gets a different one,
+      # so Android will refuse to install one of these over another — uninstall
+      # first — and anything registered against a certificate fingerprint
+      # (Google Sign-In, Maps, Firebase, Play Integrity, verified app links)
+      # will not work in these builds. Use your own keystore for anything that
+      # leaves a test device.
+      - name: Mint a throwaway signing key
+        run: |
+          set -euo pipefail
+
+          # Drawn here rather than written into this file. A literal password in
+          # a committed workflow is what a secret scanner is for, and one that
+          # fires on a file Sokial opened is a false positive somebody still has
+          # to triage — and a reason to trust the next alert less.
+          password="$(openssl rand -hex 24)"
+          echo "::add-mask::$password"
+
+          keytool -genkeypair -noprompt -storetype PKCS12 -alias sokial \
+            -keystore "$RUNNER_TEMP/sokial-release.keystore" \
+            -storepass "$password" -keypass "$password" \
+            -keyalg RSA -keysize 2048 -validity 36500 \
+            -dname "CN=Sokial test build, OU=Not for distribution, O=Sokial"
+
+          # Carried to the build step through the environment, so it never
+          # appears in a command line the process table can be read for.
+          {
+            echo "SOKIAL_STORE_PASSWORD=$password"
+            echo "SOKIAL_KEY_PASSWORD=$password"
+            echo "SOKIAL_KEY_ALIAS=sokial"
+          } >> "$GITHUB_ENV"
+
       - name: Build
         working-directory: android
         run: |
-          ./gradlew assembleDebug --no-daemon
+          ./gradlew assembleRelease --no-daemon \
+            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/sokial-release.keystore" \
+            -Pandroid.injected.signing.store.password="$SOKIAL_STORE_PASSWORD" \
+            -Pandroid.injected.signing.key.alias="$SOKIAL_KEY_ALIAS" \
+            -Pandroid.injected.signing.key.password="$SOKIAL_KEY_PASSWORD"
+
+      - name: Verify the package is signed
+        env:
+          ARTIFACT: android/app/build/outputs/apk/release/app-release.apk
+        run: |
+          set -euo pipefail
+          # apksigner ships with the Android build tools already on the runner.
+          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
+          "$apksigner" verify --print-certs "$ARTIFACT"
 
       - name: Upload to Sokial
         env:
           SOKIAL_API: https://api.sokial.app
           SOKIAL_TOKEN: ${{ inputs.sokial_token }}
           SOKIAL_CONFIG: android-debug
-          ARTIFACT: android/app/build/outputs/apk/debug/app-debug.apk
+          ARTIFACT: android/app/build/outputs/apk/release/app-release.apk
         run: |
           set -euo pipefail
 
