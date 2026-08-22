@@ -28,7 +28,11 @@ on:
         type: string
   push:
     branches: [main]
-  # Pull request builds are turned off in this project's Sokial settings.
+  pull_request:
+    paths-ignore:
+      # A change to this file alone produces a preview identical to the base
+      # branch. Nothing to install, nothing to compare.
+      - '.github/workflows/sokial.yml'
 
 # Only the newest run per ref and configuration matters — an older one is
 # building code nobody is waiting for any more. The configuration is part of the
@@ -82,160 +86,17 @@ jobs:
         run: |
           npm ci
 
-      # A signing key minted for this run and destroyed with it.
-      #
-      # It is NOT your application's identity. Every build gets a different one,
-      # so Android will refuse to install one of these over another — uninstall
-      # first — and anything registered against a certificate fingerprint
-      # (Google Sign-In, Maps, Firebase, Play Integrity, verified app links)
-      # will not work in these builds. Use your own keystore for anything that
-      # leaves a test device.
-      - name: Mint a throwaway signing key
-        run: |
-          set -euo pipefail
-
-          # Drawn here rather than written into this file. A literal password in
-          # a committed workflow is what a secret scanner is for, and one that
-          # fires on a file Sokial opened is a false positive somebody still has
-          # to triage — and a reason to trust the next alert less.
-          password="$(openssl rand -hex 24)"
-          echo "::add-mask::$password"
-
-          keytool -genkeypair -noprompt -storetype PKCS12 -alias sokial \
-            -keystore "$RUNNER_TEMP/sokial-release.keystore" \
-            -storepass "$password" -keypass "$password" \
-            -keyalg RSA -keysize 2048 -validity 36500 \
-            -dname "CN=Sokial test build, OU=Not for distribution, O=Sokial"
-
-          # Carried to the build step through the environment, so it never
-          # appears in a command line the process table can be read for.
-          {
-            echo "SOKIAL_STORE_PASSWORD=$password"
-            echo "SOKIAL_KEY_PASSWORD=$password"
-            echo "SOKIAL_KEY_ALIAS=sokial"
-          } >> "$GITHUB_ENV"
-
-      # Adds Sokial's tester gate to this build only.
-      #
-      # This configuration is set to invited testers, so the application asks
-      # for an email on first launch and opens for an address on the project's
-      # list. Nothing is written into your repository: the file below lives on
-      # the runner and is destroyed with it.
-      - name: Add the Sokial tester gate
-        env:
-          SOKIAL_MAVEN: https://maven.sokial.app
-          SOKIAL_RUNTIME_VERSION: 0.1.0
-          SOKIAL_API: https://api.sokial.app
-          SOKIAL_PROJECT: 
-        run: |
-          set -euo pipefail
-          mkdir -p "$HOME/.gradle/init.d"
-
-          # Carried to the build step, not just this one.
-          #
-          # A step's env: block ends with the step. The script written below is
-          # read much later, by Gradle, in the step that compiles — and it reads
-          # these from the environment. Without this they are absent exactly
-          # where they are needed, and the first thing Gradle does with a
-          # missing repository URL is fail somebody else's plugin resolution.
-          {
-            echo "SOKIAL_MAVEN=$SOKIAL_MAVEN"
-            echo "SOKIAL_RUNTIME_VERSION=$SOKIAL_RUNTIME_VERSION"
-            echo "SOKIAL_API=$SOKIAL_API"
-            echo "SOKIAL_PROJECT=$SOKIAL_PROJECT"
-          } >> "$GITHUB_ENV"
-
-          # Quoted heredoc: nothing in the script below is expanded by the
-          # shell, so a value is substituted once, by Gradle, from the
-          # environment — and never spliced into the file as text.
-          cat > "$HOME/.gradle/init.d/sokial-runtime.gradle" <<'SOKIAL_INIT'
-          def sokialMaven = System.getenv("SOKIAL_MAVEN")
-          def sokialVersion = System.getenv("SOKIAL_RUNTIME_VERSION")
-          def sokialApi = System.getenv("SOKIAL_API")
-          def sokialProject = System.getenv("SOKIAL_PROJECT")
-
-          // Nothing configured, nothing done.
-          //
-          // An init script applies to included builds as well as the root one —
-          // React Native resolves its own Gradle plugin from one — so a missing
-          // value must never become uri(null) in the middle of a plugin
-          // resolution that has nothing to do with Sokial.
-          //
-          // A gate that cannot configure itself leaves the build exactly as it
-          // found it. The application then opens without asking, which is
-          // wrong; a build that will not compile is unforgivable.
-          if (!sokialMaven || !sokialVersion || !sokialApi || !sokialProject) {
-              logger.lifecycle("Sokial: tester gate not configured, skipping.")
-              return
-          }
-
-          gradle.settingsEvaluated { settings ->
-              def management = settings.dependencyResolutionManagement
-              management.repositories {
-                  maven {
-                      url = uri(sokialMaven)
-                      content { includeGroup("app.sokial") }
-                  }
-              }
-
-              // Where the repository has to be declared depends on the project,
-              // and getting it wrong fails two different ways: under
-              // FAIL_ON_PROJECT_REPOS a project-level repository is a hard
-              // error, and under PREFER_PROJECT a project that declares its own
-              // never reads the settings block at all.
-              if (management.repositoriesMode.get().name() == "PREFER_PROJECT") {
-                  gradle.beforeProject { project ->
-                      project.repositories {
-                          maven {
-                              url = uri(sokialMaven)
-                              content { includeGroup("app.sokial") }
-                          }
-                      }
-                  }
-              }
-          }
-
-          gradle.beforeProject { project ->
-              // Only the application module, and only once its plugin is
-              // applied. Adding it to every module would put several copies of
-              // an auto-starting provider into one package.
-              project.plugins.withId("com.android.application") {
-                  project.dependencies.add(
-                      "implementation",
-                      "app.sokial:sokial-runtime:${sokialVersion}",
-                  )
-                  project.extensions.getByName("android").defaultConfig.manifestPlaceholders.putAll([
-                      sokialApi    : sokialApi,
-                      sokialProject: sokialProject,
-                  ])
-              }
-          }
-          SOKIAL_INIT
-
       - name: Build
         working-directory: android
         run: |
-          ./gradlew assembleRelease --no-daemon \
-            -Pandroid.injected.signing.store.file="$RUNNER_TEMP/sokial-release.keystore" \
-            -Pandroid.injected.signing.store.password="$SOKIAL_STORE_PASSWORD" \
-            -Pandroid.injected.signing.key.alias="$SOKIAL_KEY_ALIAS" \
-            -Pandroid.injected.signing.key.password="$SOKIAL_KEY_PASSWORD"
-
-      - name: Verify the package is signed
-        env:
-          ARTIFACT: android/app/build/outputs/apk/release/app-release.apk
-        run: |
-          set -euo pipefail
-          # apksigner ships with the Android build tools already on the runner.
-          apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
-          "$apksigner" verify --print-certs "$ARTIFACT"
+          ./gradlew assembleDebug --no-daemon
 
       - name: Upload to Sokial
         env:
           SOKIAL_API: https://api.sokial.app
           SOKIAL_TOKEN: ${{ inputs.sokial_token }}
           SOKIAL_CONFIG: android-debug
-          ARTIFACT: android/app/build/outputs/apk/release/app-release.apk
+          ARTIFACT: android/app/build/outputs/apk/debug/app-debug.apk
         run: |
           set -euo pipefail
 
