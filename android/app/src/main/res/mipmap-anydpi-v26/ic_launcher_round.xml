@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The adaptive icon, used from Android 8 onwards.
+
+    Two layers so the launcher can mask and animate them independently: a flat
+    background it can move against, and the artwork on top. The PNGs in
+    mipmap-*dpi are the fallback for anything older, and are complete icons
+    rather than layers.
+
+    No monochrome layer: Android 13 tints it to a flat silhouette, and this
+    foreground is an opaque square — it would theme into a solid blob. A
+    themed icon needs artwork drawn for it, not this one recoloured.
+-->
+<adaptive-icon xmlns:android="http://schemas.android.com/apk/res/android">
+    <background android:drawable="@color/ic_launcher_background" />
+    <foreground android:drawable="@mipmap/ic_launcher_foreground" />
+</adaptive-icon>
