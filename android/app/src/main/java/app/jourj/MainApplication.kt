@@ -1,4 +1,4 @@
-package com.sokialtestreactnative
+package app.jourj
 
 import android.app.Application
 import com.facebook.react.PackageList

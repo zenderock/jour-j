@@ -24,7 +24,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     window = UIWindow(frame: UIScreen.main.bounds)
 
     factory.startReactNative(
-      withModuleName: "SokialTestReactNative",
+      // Must match the name index.js registers, from app.json. The Xcode
+      // project keeps its scaffolded name — Sokial does not build iOS, so
+      // renaming it would be churn — but the module name is not cosmetic:
+      // a mismatch here is a crash on the first frame.
+      withModuleName: "JourJ",
       in: window,
       launchOptions: launchOptions
     )
