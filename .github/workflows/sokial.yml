@@ -26,9 +26,7 @@ on:
         description: "Which configuration to build: android-debug"
         required: false
         type: string
-  push:
-    branches: [main]
-  # Pull request builds are turned off in this project's Sokial settings.
+  # Automatic push and pull request builds are turned off in this project's Sokial settings.
 
 # Only the newest run per ref and configuration matters — an older one is
 # building code nobody is waiting for any more. The configuration is part of the
@@ -124,7 +122,7 @@ jobs:
       - name: Add the Sokial tester gate
         env:
           SOKIAL_MAVEN: https://maven.sokial.app
-          SOKIAL_RUNTIME_VERSION: 0.1.0
+          SOKIAL_RUNTIME_VERSION: 0.1.1
           SOKIAL_API: https://api.sokial.app
           SOKIAL_PROJECT: 09e80a7a-af0c-4b49-983b-ad7b2e499dd7
         run: |
