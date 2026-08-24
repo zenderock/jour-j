@@ -122,7 +122,7 @@ jobs:
       - name: Add the Sokial tester gate
         env:
           SOKIAL_MAVEN: https://maven.sokial.app
-          SOKIAL_RUNTIME_VERSION: 0.1.2
+          SOKIAL_RUNTIME_VERSION: 0.1.3
           SOKIAL_API: https://api.sokial.app
           SOKIAL_PROJECT: 09e80a7a-af0c-4b49-983b-ad7b2e499dd7
         run: |
@@ -151,6 +151,8 @@ jobs:
           def sokialVersion = System.getenv("SOKIAL_RUNTIME_VERSION")
           def sokialApi = System.getenv("SOKIAL_API")
           def sokialProject = System.getenv("SOKIAL_PROJECT")
+          def sokialRun = System.getenv("GITHUB_RUN_ID")
+          def sokialRunAttempt = System.getenv("GITHUB_RUN_ATTEMPT")
 
           // Nothing configured, nothing done.
           //
@@ -163,7 +165,8 @@ jobs:
           // while the workflow says it is protected is worse than stopping the
           // build, because the resulting file can be forwarded as if the gate
           // were present.
-          if (!sokialMaven || !sokialVersion || !sokialApi || !sokialProject) {
+          if (!sokialMaven || !sokialVersion || !sokialApi || !sokialProject ||
+              !sokialRun || !sokialRunAttempt) {
               throw new GradleException("Sokial: tester gate configuration is incomplete.")
           }
 
@@ -205,6 +208,8 @@ jobs:
                   project.extensions.getByName("android").defaultConfig.manifestPlaceholders.putAll([
                       sokialApi    : sokialApi,
                       sokialProject: sokialProject,
+                      sokialRun    : sokialRun,
+                      sokialRunAttempt: sokialRunAttempt,
                   ])
               }
           }
@@ -232,6 +237,8 @@ jobs:
         env:
           SOKIAL_ARTIFACT: "android/app/build/outputs/apk/release/app-release.apk"
           SOKIAL_PROJECT: "09e80a7a-af0c-4b49-983b-ad7b2e499dd7"
+          SOKIAL_RUN: ${{ github.run_id }}
+          SOKIAL_RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
 
@@ -265,6 +272,14 @@ jobs:
           fi
           if ! grep -Fq "$SOKIAL_PROJECT" "$manifest"; then
             echo "::error::The APK tester gate is not configured for this Sokial project. Nothing was uploaded."
+            exit 1
+          fi
+          if ! grep -Fq "app.sokial.run" "$manifest" || ! grep -Fq "sokial:$SOKIAL_RUN" "$manifest"; then
+            echo "::error::The APK tester gate cannot identify the Sokial build that produced it. Nothing was uploaded."
+            exit 1
+          fi
+          if ! grep -Fq "app.sokial.run_attempt" "$manifest" || ! grep -Fq "sokial-attempt:$SOKIAL_RUN_ATTEMPT" "$manifest"; then
+            echo "::error::The APK tester gate cannot identify this build attempt. Nothing was uploaded."
             exit 1
           fi
 
