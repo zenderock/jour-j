@@ -122,7 +122,7 @@ jobs:
       - name: Add the Sokial tester gate
         env:
           SOKIAL_MAVEN: https://maven.sokial.app
-          SOKIAL_RUNTIME_VERSION: 0.1.1
+          SOKIAL_RUNTIME_VERSION: 0.1.2
           SOKIAL_API: https://api.sokial.app
           SOKIAL_PROJECT: 09e80a7a-af0c-4b49-983b-ad7b2e499dd7
         run: |
