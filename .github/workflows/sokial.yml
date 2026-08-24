@@ -161,12 +161,12 @@ jobs:
           // value must never become uri(null) in the middle of a plugin
           // resolution that has nothing to do with Sokial.
           //
-          // A gate that cannot configure itself leaves the build exactly as it
-          // found it. The application then opens without asking, which is
-          // wrong; a build that will not compile is unforgivable.
+          // A tester-only build must fail closed. Producing an ordinary APK
+          // while the workflow says it is protected is worse than stopping the
+          // build, because the resulting file can be forwarded as if the gate
+          // were present.
           if (!sokialMaven || !sokialVersion || !sokialApi || !sokialProject) {
-              logger.lifecycle("Sokial: tester gate not configured, skipping.")
-              return
+              throw new GradleException("Sokial: tester gate configuration is incomplete.")
           }
 
           gradle.settingsEvaluated { settings ->
@@ -229,6 +229,48 @@ jobs:
           # apksigner ships with the Android build tools already on the runner.
           apksigner=$(ls "$ANDROID_HOME"/build-tools/*/apksigner | sort -V | tail -1)
           "$apksigner" verify --print-certs "$ARTIFACT"
+
+      - name: Verify the Sokial tester gate
+        env:
+          SOKIAL_ARTIFACT: "android/app/build/outputs/apk/release/app-release.apk"
+          SOKIAL_PROJECT: "09e80a7a-af0c-4b49-983b-ad7b2e499dd7"
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$SOKIAL_PROJECT" ]]; then
+            echo "::error::Sokial cannot verify the tester gate because this workflow has no project id. Update the Sokial workflow and rebuild."
+            exit 1
+          fi
+          if [[ ! -f "$SOKIAL_ARTIFACT" ]]; then
+            echo "::error::The APK was not found at $SOKIAL_ARTIFACT, so its tester gate cannot be verified."
+            exit 1
+          fi
+
+          sdk="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+          if [[ -z "$sdk" || ! -d "$sdk/build-tools" ]]; then
+            echo "::error::Android build tools are unavailable, so Sokial cannot verify the tester gate."
+            exit 1
+          fi
+          aapt2="$(find "$sdk/build-tools" -type f -name aapt2 -print | sort -V | tail -n 1)"
+          if [[ -z "$aapt2" ]]; then
+            echo "::error::aapt2 is unavailable, so Sokial cannot verify the tester gate."
+            exit 1
+          fi
+
+          manifest="$(mktemp)"
+          trap 'rm -f "$manifest"' EXIT
+          "$aapt2" dump xmltree "$SOKIAL_ARTIFACT" --file AndroidManifest.xml > "$manifest"
+
+          if ! grep -Fq "app.sokial.runtime.SokialProvider" "$manifest"; then
+            echo "::error::The APK does not contain the Sokial tester gate runtime. Nothing was uploaded."
+            exit 1
+          fi
+          if ! grep -Fq "$SOKIAL_PROJECT" "$manifest"; then
+            echo "::error::The APK tester gate is not configured for this Sokial project. Nothing was uploaded."
+            exit 1
+          fi
+
+          echo "Sokial tester gate verified in the APK."
 
       - name: Upload to Sokial
         env:
